@@ -1,0 +1,90 @@
+name: Build and Deploy to Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+# The web output is APP_NAME.html/.js/.wasm. Keep APP_NAME in sync with the
+# `set(APP_NAME ...)` line in CMakeLists.txt.
+env:
+  APP_NAME: dear_raylib
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Expose whether Pages is enabled so the deploy job can be skipped gracefully.
+    outputs:
+      pages_enabled: ${{ steps.check-pages.outputs.enabled }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check if GitHub Pages is enabled
+        id: check-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::GitHub Pages is not enabled — building only, skipping deploy. Enable it under Settings → Pages (Source: GitHub Actions) to publish."
+          fi
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache CPM dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: cpm-
+
+      - name: Configure
+        run: emcmake cmake -B build-web -DCMAKE_BUILD_TYPE=Release
+        env:
+          CPM_SOURCE_CACHE: ~/.cache/CPM
+
+      - name: Build
+        run: cmake --build build-web --parallel $(nproc)
+
+      - name: Prepare artifact
+        run: |
+          mkdir pages
+          cp "build-web/${APP_NAME}.html" pages/index.html
+          cp "build-web/${APP_NAME}.js"   pages/
+          cp "build-web/${APP_NAME}.wasm" pages/
+          # .data only exists when assets/ has files (preloaded filesystem)
+          cp "build-web/${APP_NAME}.data" pages/ 2>/dev/null || true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+
+  deploy:
+    needs: build
+    # Only deploy when Pages is enabled; otherwise the build job alone succeeds.
+    if: needs.build.outputs.pages_enabled == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

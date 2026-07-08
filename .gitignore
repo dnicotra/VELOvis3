@@ -1,0 +1,45 @@
+# Build directories
+build*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!cmake/CPM.cmake
+
+# Compiled binaries
+*.exe
+*.out
+*.app
+*.lib
+*.a
+*.so
+*.dll
+*.pdb
+
+# WebAssembly outputs
+*.wasm
+
+# Local toolchains (e.g. emsdk if cloned into the repo)
+build-tools/
+
+# Editor / IDE
+.vs/
+*.sln
+*.vcxproj*
+*.suo
+*.user
+.idea/
+cmake-build-*/
+.vscode/
+
+# OS
+.DS_Store
+
+# ImGui runtime layout (uncomment to ship a default layout instead)
+imgui.ini

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en-us">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>dear_raylib</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: monospace; }
+    body { display: flex; flex-direction: column; }
+
+    #canvas-container { flex: 1; overflow: hidden; position: relative; min-height: 0; }
+    canvas { display: block; outline: none; }
+
+    #console-area {
+      flex-shrink: 0; height: 130px;
+      display: flex; flex-direction: column;
+      border-top: 1px solid #2a2a2a;
+    }
+    #console-toolbar {
+      background: #111; height: 24px;
+      display: flex; align-items: center;
+      padding: 0 8px; gap: 12px; flex-shrink: 0;
+    }
+    #status { color: #888; font-size: 11px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tbtn {
+      background: none; border: none;
+      color: #777; font-size: 11px; cursor: pointer; font-family: monospace;
+    }
+    .tbtn:hover { color: #ddd; }
+    #output {
+      flex: 1; background: #080808; color: #6c6;
+      font-family: monospace; font-size: 11px;
+      border: none; padding: 4px 6px;
+      resize: none; outline: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-container">
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex=-1></canvas>
+  </div>
+  <div id="console-area">
+    <div id="console-toolbar">
+      <span id="status">Loading…</span>
+      <button id="fullscreen-btn" class="tbtn">fullscreen</button>
+      <button id="clear-btn" class="tbtn">clear</button>
+    </div>
+    <textarea id="output" readonly></textarea>
+  </div>
+
+  <script>
+    var statusEl = document.getElementById('status');
+    var outputEl = document.getElementById('output');
+    var canvasEl = document.getElementById('canvas');
+
+    document.getElementById('clear-btn').onclick = function () { outputEl.value = ''; };
+
+    // Fullscreen the canvas container so the console pane is hidden while immersed.
+    document.getElementById('fullscreen-btn').onclick = function () {
+      var el = document.getElementById('canvas-container');
+      if (!document.fullscreenElement) {
+        (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+      } else {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      }
+    };
+
+    var Module = {
+      canvas: canvasEl,
+      print(...args) {
+        var line = args.join(' ');
+        outputEl.value += line + '\n';
+        outputEl.scrollTop = outputEl.scrollHeight;
+        console.log(...args);
+      },
+      printErr(...args) {
+        var line = '[err] ' + args.join(' ');
+        outputEl.value += line + '\n';
+        outputEl.scrollTop = outputEl.scrollHeight;
+        console.error(...args);
+      },
+      setStatus(text) {
+        statusEl.textContent = text || 'Ready';
+      },
+      totalDependencies: 0,
+      monitorRunDependencies(left) {
+        this.totalDependencies = Math.max(this.totalDependencies, left);
+        this.setStatus(left
+          ? 'Downloading… (' + (this.totalDependencies - left) + '/' + this.totalDependencies + ')'
+          : 'Ready');
+      }
+    };
+
+    window.onerror = (msg) => {
+      statusEl.textContent = 'Error — see browser console';
+      console.error(msg);
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
