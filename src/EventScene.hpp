@@ -70,6 +70,18 @@ struct DetectorLayer {
     GpuBatch edgeBatch;   // bright wireframe outlines (the main 3D cue)
     bool   dirty       = true;
     int    moduleCount = 0;
+
+    // CPU-side copy of the baked face triangles, kept so they can be re-sorted
+    // back-to-front for correct alpha compositing between overlapping modules as
+    // the camera moves. faceVerts holds 3 verts per triangle in build order.
+    std::vector<Vector3> faceVerts;
+    std::vector<Color>   faceCols;       // parallel to faceVerts
+    std::vector<Vector3> faceCentroid;   // one per triangle (faceVerts.size()/3)
+    std::vector<int>     triOrder;       // scratch: triangle indices, sorted far→near
+    std::vector<Vector3> sortVerts;      // scratch: gathered sorted verts
+    std::vector<Color>   sortCols;       // scratch: gathered sorted colors
+    Vector3 lastSortCam{0, 0, 0};        // camera position at the last sort
+    bool    sortValid = false;           // reset on rebuild; drives the idle skip
 };
 
 // Owns the hit positions plus one hit layer and any number of track layers,
@@ -81,7 +93,7 @@ public:
     void Clear();
 
     void Update();          // rebuild any dirty layer batches (needs a GL context)
-    void Draw() const;      // call inside BeginMode3D
+    void Draw(Vector3 camPos); // call inside BeginMode3D; camPos drives depth sorting
     void DrawInspectorUI(); // ImGui controls for every layer
 
     BoundingBox Bounds() const { return bounds_; }
@@ -91,6 +103,7 @@ private:
     void RebuildHits(HitLayer& l);
     void RebuildTracks(TrackLayer& l);
     void RebuildDetector(DetectorLayer& l);
+    void SortDetector(Vector3 camPos);  // re-sort detector faces back-to-front
 
     std::vector<Vector3> positions_;    // hit positions (world space)
     std::vector<int>     module_;       // per-hit module index (from prefix sums)

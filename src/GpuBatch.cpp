@@ -1,6 +1,7 @@
 #include "GpuBatch.hpp"
 
 #include "raymath.h"
+#include "rlgl.h"
 #include <cmath>
 #include <cstdlib>
 #include <utility>
@@ -150,6 +151,22 @@ void GpuBatch::BuildTriangles(const std::vector<Vector3>& v,
         cols[i * 4 + 2] = k.b; cols[i * 4 + 3] = k.a;
     }
     Upload(vcount, verts, cols);
+}
+
+void GpuBatch::UpdateVertices(const std::vector<Vector3>& verts,
+                             const std::vector<Color>&   colors) {
+    if (!uploaded_ || (int)verts.size() != mesh_.vertexCount) return;
+    const int vcount = mesh_.vertexCount;
+    for (int i = 0; i < vcount; ++i) {
+        mesh_.vertices[i * 3 + 0] = verts[i].x;
+        mesh_.vertices[i * 3 + 1] = verts[i].y;
+        mesh_.vertices[i * 3 + 2] = verts[i].z;
+        const Color k = (i < (int)colors.size()) ? colors[i] : WHITE;
+        mesh_.colors[i * 4 + 0] = k.r; mesh_.colors[i * 4 + 1] = k.g;
+        mesh_.colors[i * 4 + 2] = k.b; mesh_.colors[i * 4 + 3] = k.a;
+    }
+    rlUpdateVertexBuffer(mesh_.vboId[0], mesh_.vertices, vcount * 3 * (int)sizeof(float), 0);
+    rlUpdateVertexBuffer(mesh_.vboId[3], mesh_.colors,   vcount * 4 * (int)sizeof(unsigned char), 0);
 }
 
 void GpuBatch::Draw(Color tint) const {

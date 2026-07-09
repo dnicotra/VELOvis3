@@ -448,7 +448,51 @@ void EventScene::RebuildDetector(DetectorLayer& l) {
     l.moduleCount = count;
     l.batch.BuildTriangles(fverts, fcols);
     l.edgeBatch.BuildSegments(eA, eB, ecols, l.edgeWidth);
+
+    // Keep a CPU copy of the face triangles plus their centroids so Draw() can
+    // re-sort them back-to-front against the camera. Invalidate any prior sort.
+    l.faceCentroid.resize(fverts.size() / 3);
+    for (size_t t = 0; t < l.faceCentroid.size(); ++t)
+        l.faceCentroid[t] = Vector3Scale(
+            Vector3Add(Vector3Add(fverts[t * 3 + 0], fverts[t * 3 + 1]), fverts[t * 3 + 2]),
+            1.0f / 3.0f);
+    l.faceVerts = std::move(fverts);
+    l.faceCols  = std::move(fcols);
+    l.sortValid = false;
+
     l.dirty = false;
+}
+
+// Re-order the detector's translucent face triangles far-to-near from the camera
+// so BLEND_ALPHA composites overlapping modules correctly (you see through a near
+// module to the ones behind it). Skipped while the camera is essentially still.
+void EventScene::SortDetector(Vector3 camPos) {
+    DetectorLayer& l = detector_;
+    const int tri = (int)l.faceCentroid.size();
+    if (tri == 0) return;
+
+    if (l.sortValid && Vector3DistanceSqr(camPos, l.lastSortCam) < 1e-4f)
+        return;
+    l.lastSortCam = camPos;
+    l.sortValid   = true;
+
+    l.triOrder.resize(tri);
+    for (int i = 0; i < tri; ++i) l.triOrder[i] = i;
+    std::sort(l.triOrder.begin(), l.triOrder.end(), [&](int a, int b) {
+        return Vector3DistanceSqr(l.faceCentroid[a], camPos) >
+               Vector3DistanceSqr(l.faceCentroid[b], camPos);
+    });
+
+    l.sortVerts.resize((size_t)tri * 3);
+    l.sortCols.resize((size_t)tri * 3);
+    for (int t = 0; t < tri; ++t) {
+        const int s = l.triOrder[t];
+        for (int k = 0; k < 3; ++k) {
+            l.sortVerts[t * 3 + k] = l.faceVerts[s * 3 + k];
+            l.sortCols [t * 3 + k] = l.faceCols [s * 3 + k];
+        }
+    }
+    l.batch.UpdateVertices(l.sortVerts, l.sortCols);
 }
 
 // ─── Frame ─────────────────────────────────────────────────────────────────────
@@ -460,15 +504,31 @@ void EventScene::Update() {
     if (detector_.dirty) RebuildDetector(detector_);
 }
 
-void EventScene::Draw() const {
+void EventScene::Draw(Vector3 camPos) {
     // Solid boxes/prisms with arbitrary winding — disable culling so no faces
     // drop out. Alpha blend so per-layer transparency reads correctly.
     rlDisableBackfaceCulling();
     BeginBlendMode(BLEND_ALPHA);
 
-    // Detector first, with depth writes off so the translucent planes never
-    // occlude the hits/tracks that sit inside them.
-    if (detector_.visible) {
+    // Solid content (tracks, then hits) first, with normal depth testing and
+    // writing: they occlude one another correctly and seed the depth buffer that
+    // the detector overlay is then composited against.
+    for (const auto& l : trackLayers_)
+        if (l.visible)
+            l.batch.Draw({255, 255, 255, (unsigned char)(l.alpha * 255.0f)});
+
+    if (hitLayer_.visible)
+        hitLayer_.batch.Draw({255, 255, 255, (unsigned char)(hitLayer_.alpha * 255.0f)});
+
+    // Detector overlay. The translucent module faces overlap heavily in screen
+    // space, so correct transparency needs them composited back-to-front: SortDetector
+    // re-orders the baked triangles by camera distance each frame (cheap; skipped
+    // while the camera is still). Depth *writes* stay off — the faint overlay must
+    // not hide the hits/tracks — but depth *testing* stays on so solid geometry in
+    // front of a face still occludes it. With the faces ordered far→near, a nearer
+    // module correctly blends over (and shows through to) the ones behind it.
+    if (detector_.visible && !detector_.batch.Empty()) {
+        SortDetector(camPos);
         rlDisableDepthMask();
         detector_.batch.Draw({255, 255, 255, (unsigned char)(detector_.alpha * 255.0f)});
         // Outlines stay more opaque than the faces so the box shape reads clearly.
@@ -476,13 +536,6 @@ void EventScene::Draw() const {
         detector_.edgeBatch.Draw({255, 255, 255, (unsigned char)(ea * 255.0f)});
         rlEnableDepthMask();
     }
-
-    for (const auto& l : trackLayers_)
-        if (l.visible)
-            l.batch.Draw({255, 255, 255, (unsigned char)(l.alpha * 255.0f)});
-
-    if (hitLayer_.visible)
-        hitLayer_.batch.Draw({255, 255, 255, (unsigned char)(hitLayer_.alpha * 255.0f)});
 
     EndBlendMode();
     rlEnableBackfaceCulling();

@@ -37,6 +37,13 @@ public:
     void BuildTriangles(const std::vector<Vector3>& verts,
                         const std::vector<Color>&   colors);
 
+    // Overwrite the existing vertex positions/colors in place — the counts must
+    // match the last Build*. Updates the GPU buffers without reallocating them,
+    // so it's cheap enough to call per frame (e.g. to depth-sort a translucent
+    // batch back-to-front as the camera moves).
+    void UpdateVertices(const std::vector<Vector3>& verts,
+                        const std::vector<Color>&   colors);
+
     void Draw(Color tint) const;   // call inside BeginMode3D
     void Clear();                  // free GPU + CPU mesh
     bool Empty()       const { return !uploaded_; }

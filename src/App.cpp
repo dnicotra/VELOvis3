@@ -368,7 +368,7 @@ void App::DrawScene()
 
     BeginMode3D(state.camera);
 
-    scene.Draw();
+    scene.Draw(state.camera.position);
 
     if (state.showBoundingBox) {
         const BoundingBox bb = scene.Bounds();
