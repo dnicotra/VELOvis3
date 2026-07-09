@@ -35,7 +35,7 @@ struct TrackLayer {
     std::vector<Track>     tracks;
     std::vector<TrackMeta> meta;      // parallel to tracks, or empty
     bool      visible = true;
-    float     width   = 1.5f;
+    float     width   = 0.71f;
     float     alpha   = 1.0f;
     ColorSpec color;
     GpuBatch  batch;
@@ -55,7 +55,7 @@ struct TrackLayer {
 struct HitLayer {
     std::string name = "Hits";
     bool      visible = true;
-    float     size    = 2.0f;
+    float     size    = 1.20f;
     float     alpha   = 1.0f;
     ColorSpec color   = {0, {255, 255, 255, 255}};  // Uniform white by default
     GpuBatch  batch;
@@ -77,11 +77,11 @@ struct HitLayer {
 struct DetectorLayer {
     std::string name = "VELO detector";
     bool   visible   = true;
-    float  alpha     = 0.18f;                  // low: it's a translucent overlay
-    Color  colorA    = {70, 140, 230, 255};    // A-side (positive x, odd modules)
-    Color  colorC    = {235, 130, 55, 255};    // C-side (negative x, even modules)
-    float  thickness = 4.0f;                    // box z-thickness (mm)
-    float  edgeWidth = 0.7f;                     // outline thickness (mm)
+    float  alpha     = 0.06f;                  // low: it's a translucent overlay
+    Color  colorA    = {99, 99, 99, 255};      // A-side (positive x, odd modules)
+    Color  colorC    = {99, 99, 99, 255};      // C-side (negative x, even modules)
+    float  thickness = 0.9f;                    // box z-thickness (mm)
+    float  edgeWidth = 0.16f;                    // outline thickness (mm)
     GpuBatch batch;       // shaded translucent box faces
     GpuBatch edgeBatch;   // bright wireframe outlines (the main 3D cue)
     bool   dirty       = true;

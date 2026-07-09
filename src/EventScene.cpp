@@ -234,10 +234,10 @@ void EventScene::SetEvent(const velo::VeloEvent& ev) {
     hitLayer_ = HitLayer{};
     hitLayer_.dirty = true;
 
-    // MC-truth track layer. Default to coloring by PID to showcase the feature.
+    // MC-truth track layer. Default to coloring by eta to showcase the feature.
     TrackLayer mc;
     mc.name = "Tracks";
-    mc.color.mode = TCM_Pid;  // signed PID (charge-shaded) by default
+    mc.color.mode = TCM_Eta;
     mc.tracks.reserve(ev.montecarlo.particles.size());
     mc.meta.reserve(ev.montecarlo.particles.size());
     for (const auto& p : ev.montecarlo.particles) {
