@@ -2,8 +2,18 @@
 
 #include "rlImGui.h"
 #include "imgui.h"
+#include "raymath.h"
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
+#include <ctime>
+#include <filesystem>
+#include <stdexcept>
+
+// Directory (relative to the working directory) that holds the event JSON.
+// The same relative path resolves on native disk and in the Emscripten
+// virtual filesystem (assets/ is preloaded there via --preload-file).
+static const char* kEventsDir = "assets/events";
 
 // ─── Web (Emscripten) interop ──────────────────────────────────────────────────
 // The HTML shell owns a #canvas-container that flexes to fill the page; the
@@ -20,7 +30,37 @@ EM_JS(void,   set_canvas_css_size, (int w, int h), {
     Module.canvas.style.width  = w + 'px';
     Module.canvas.style.height = h + 'px';
 });
+EM_JS(void, download_png, (const char* namePtr, const unsigned char* dataPtr, int dataSize), {
+    const name = UTF8ToString(namePtr);
+    const bytes = HEAPU8.slice(dataPtr, dataPtr + dataSize);
+    const blob = new Blob([bytes], { type: 'image/png' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 #endif
+
+static std::string ScreenshotName(int serial)
+{
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+
+    char name[96];
+    std::snprintf(name, sizeof(name), "VELOvis3_%04d%02d%02d_%02d%02d%02d_%03d.png",
+                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                  tm.tm_hour, tm.tm_min, tm.tm_sec, serial);
+    return name;
+}
 
 // Screen-size helpers: on the web, GetRenderWidth/Height track the physical
 // framebuffer and are updated by SetWindowSize; GetScreenWidth is stale after a
@@ -37,6 +77,8 @@ static inline int SH() { return GetScreenHeight(); }
 
 App::App()
 {
+    SetConfigFlags(FLAG_MSAA_4X_HINT);
+
 #ifdef __EMSCRIPTEN__
     double dpr = device_pixel_ratio();
     dpiScale   = (float)dpr;
@@ -45,12 +87,12 @@ App::App()
     int w      = (int)(cssW * dpr + 0.5);
     int h      = (int)(cssH * dpr + 0.5);
 #else
-    SetConfigFlags(FLAG_WINDOW_HIGHDPI | FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT);
+    SetConfigFlags(FLAG_WINDOW_HIGHDPI | FLAG_WINDOW_RESIZABLE);
     int w = 1280;
     int h = 720;
 #endif
     SetTraceLogLevel(LOG_WARNING); // quiet raylib's INFO spam
-    InitWindow(w, h, "dear_raylib");
+    InitWindow(w, h, "VELOvis");
     SetExitKey(KEY_NULL);          // don't let ESC close the window
     SetTargetFPS(60);
 
@@ -70,10 +112,22 @@ App::App()
 
     lastW = SW();
     lastH = SH();
-    state.pos = { SW() * 0.5f, SH() * 0.5f };
+
+    // Default camera; overwritten by FrameEvent() once an event is loaded.
+    state.camera.position   = {0.0f, 0.0f, 400.0f};
+    state.camera.target     = {0.0f, 0.0f, 0.0f};
+    state.camera.up         = {0.0f, 1.0f, 0.0f};
+    state.camera.fovy       = 45.0f;
+    state.camera.projection = CAMERA_PERSPECTIVE;
+
+    // Populate the dropdown and open the first event so there's something to see.
+    RefreshEventList();
+    if (!state.eventFiles.empty())
+        LoadEvent(0);
 
     // Anything printed to stdout/stderr shows up in the web console pane.
-    printf("dear_raylib started: %d x %d (dpi scale %.2f)\n", SW(), SH(), dpiScale);
+    printf("VELOvis started: %d x %d (dpi scale %.2f), %zu event files\n",
+           SW(), SH(), dpiScale, state.eventFiles.size());
     fflush(stdout);
 }
 
@@ -88,15 +142,86 @@ bool App::ShouldClose() const
     return WindowShouldClose();
 }
 
+// ─── Event loading ─────────────────────────────────────────────────────────────
+
+void App::RefreshEventList()
+{
+    state.eventFiles.clear();
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(kEventsDir)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".json")
+                state.eventFiles.push_back(entry.path().filename().string());
+        }
+    } catch (const std::exception& e) {
+        printf("could not list %s: %s\n", kEventsDir, e.what());
+    }
+    std::sort(state.eventFiles.begin(), state.eventFiles.end());
+}
+
+void App::LoadEvent(int index)
+{
+    if (index < 0 || index >= (int)state.eventFiles.size())
+        return;
+
+    const std::string path = std::string(kEventsDir) + "/" + state.eventFiles[index];
+    try {
+        state.event        = velo::EventReader::LoadFromFile(path);
+        state.selectedEvent = index;
+        state.hasEvent      = true;
+        scene.SetEvent(state.event);
+        // Frame the first event; keep the user's camera on later switches, but
+        // still refresh the movement-speed scale for the new event's extent.
+        if (!framedOnce) { FrameEvent(); framedOnce = true; }
+        else             { UpdateViewScale(); }
+        printf("loaded %s: %zu hits, %zu particles\n",
+               path.c_str(), state.event.x.size(), state.event.montecarlo.particles.size());
+    } catch (const std::exception& e) {
+        printf("failed to load %s: %s\n", path.c_str(), e.what());
+        state.hasEvent = false;
+    }
+    fflush(stdout);
+}
+
+// Look direction from yaw/pitch. Shared by FrameEvent and UpdateFlyCamera.
+static Vector3 ForwardDir(float yaw, float pitch)
+{
+    const float cp = cosf(pitch);
+    return Vector3{cp * sinf(yaw), sinf(pitch), cp * cosf(yaw)};
+}
+
+void App::UpdateViewScale()
+{
+    if (scene.Empty()) return;
+    const BoundingBox bb = scene.Bounds();
+    const float ext = fmaxf(bb.max.x - bb.min.x, fmaxf(bb.max.y - bb.min.y, bb.max.z - bb.min.z));
+    state.viewScale = fmaxf(ext, 1.0f);
+}
+
+void App::FrameEvent()
+{
+    if (scene.Empty()) return;
+    UpdateViewScale();
+
+    const BoundingBox bb = scene.Bounds();
+    const Vector3 center = {
+        (bb.min.x + bb.max.x) * 0.5f,
+        (bb.min.y + bb.max.y) * 0.5f,
+        (bb.min.z + bb.max.z) * 0.5f,
+    };
+
+    // Keep the current look direction; back the eye off so the whole event fits.
+    const float dist = state.viewScale * 1.2f + 1.0f;
+    state.camPos = Vector3Subtract(center, Vector3Scale(ForwardDir(state.camYaw, state.camPitch), dist));
+}
+
 // ─── Input ───────────────────────────────────────────────────────────────────
 
 void App::HandleEvents()
 {
     if (IsKeyDown(KEY_LEFT_CONTROL) && IsKeyPressed(KEY_Q))
         CloseWindow();
-
-    if (IsKeyPressed(KEY_SPACE))
-        state.paused = !state.paused;
+    if (IsKeyPressed(KEY_F12))
+        RequestScreenshot();
 
 #ifdef __EMSCRIPTEN__
     // Detect canvas buffer resizes (e.g. browser window resize). canvas_buf_*
@@ -116,29 +241,149 @@ void App::HandleEvents()
 
 void App::Update()
 {
-    if (state.paused) return;
+    UpdateFlyCamera();
+    scene.Update();   // rebuild any layer batches marked dirty by the UI
+}
 
-    float dt = GetFrameTime();
-    state.pos.x += state.vel.x * state.speed * dt;
-    state.pos.y += state.vel.y * state.speed * dt;
+// ─── Screenshot ───────────────────────────────────────────────────────────────
 
-    // Bounce off the window edges.
-    if (state.pos.x - state.radius < 0)        { state.pos.x = state.radius;            state.vel.x =  fabsf(state.vel.x); }
-    if (state.pos.x + state.radius > SW())      { state.pos.x = SW() - state.radius;      state.vel.x = -fabsf(state.vel.x); }
-    if (state.pos.y - state.radius < 0)        { state.pos.y = state.radius;            state.vel.y =  fabsf(state.vel.y); }
-    if (state.pos.y + state.radius > SH())      { state.pos.y = SH() - state.radius;      state.vel.y = -fabsf(state.vel.y); }
+void App::RequestScreenshot()
+{
+    screenshotPending = true;
+}
+
+void App::CaptureScreenshot()
+{
+    if (!screenshotPending) return;
+    screenshotPending = false;
+
+    const std::string fileName = ScreenshotName(++screenshotSerial);
+    Image image = LoadImageFromScreen();
+
+#ifdef __EMSCRIPTEN__
+    int pngSize = 0;
+    unsigned char* png = ExportImageToMemory(image, ".png", &pngSize);
+    if (png && pngSize > 0) {
+        download_png(fileName.c_str(), png, pngSize);
+        printf("Screenshot downloaded: %s\n", fileName.c_str());
+    } else {
+        printf("Screenshot failed\n");
+    }
+    fflush(stdout);
+    MemFree(png);
+#else
+    if (ExportImage(image, fileName.c_str()))
+        printf("Screenshot saved: %s\n", fileName.c_str());
+    else
+        printf("Screenshot failed: %s\n", fileName.c_str());
+    fflush(stdout);
+#endif
+
+    UnloadImage(image);
+}
+
+void App::UpdateFlyCamera()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Hold Shift for precision: slower look/pan/fly and finer dolly.
+    const bool  slowMod = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+    const float slow    = slowMod ? 0.2f : 1.0f;
+
+    Vector3 forward = ForwardDir(state.camYaw, state.camPitch);
+    Vector3 right   = Vector3Normalize(Vector3CrossProduct(forward, Vector3{0, 1, 0}));
+
+    // Don't steal the mouse while the pointer is over an ImGui window.
+    if (!io.WantCaptureMouse) {
+        const Vector2 d = GetMouseDelta();
+
+        // Left drag: mouse-look (FPS style) about the eye. No roll — up stays up.
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            state.camYaw   -= d.x * 0.005f;
+            state.camPitch -= d.y * 0.005f;
+            const float lim = 1.55f; // just under pi/2 to avoid flipping over
+            state.camPitch = fmaxf(-lim, fminf(lim, state.camPitch));
+            forward = ForwardDir(state.camYaw, state.camPitch);
+            right   = Vector3Normalize(Vector3CrossProduct(forward, Vector3{0, 1, 0}));
+        }
+
+        // Right/middle drag: strafe the eye across the view plane.
+        if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
+            const Vector3 up = Vector3CrossProduct(right, forward);
+            const float s = state.viewScale * 0.002f * slow;
+            state.camPos = Vector3Add(state.camPos,
+                Vector3Add(Vector3Scale(right, -d.x * s), Vector3Scale(up, d.y * s)));
+        }
+
+        // Wheel: dolly the eye along the look direction.
+        const float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f)
+            state.camPos = Vector3Add(state.camPos,
+                Vector3Scale(forward, wheel * state.viewScale * 0.08f * slow));
+    }
+
+    // WASD/QE: fly the eye. Speed scales with the scene extent so it stays usable
+    // across the very elongated detector. Ctrl is reserved for shortcuts.
+    if (!io.WantCaptureKeyboard && !IsKeyDown(KEY_LEFT_CONTROL)) {
+        const float spd = state.viewScale * state.moveSpeed * slow * GetFrameTime();
+        Vector3 move = {0, 0, 0};
+        if (IsKeyDown(KEY_W)) move = Vector3Add(move, Vector3Scale(forward, spd));
+        if (IsKeyDown(KEY_S)) move = Vector3Subtract(move, Vector3Scale(forward, spd));
+        if (IsKeyDown(KEY_D)) move = Vector3Add(move, Vector3Scale(right, spd));
+        if (IsKeyDown(KEY_A)) move = Vector3Subtract(move, Vector3Scale(right, spd));
+        if (IsKeyDown(KEY_E)) move.y += spd;
+        if (IsKeyDown(KEY_Q)) move.y -= spd;
+        state.camPos = Vector3Add(state.camPos, move);
+    }
+
+    // Ease the rendered pose toward the input-driven goal. The factor
+    // 1 - e^(-k*dt) is framerate-independent and never overshoots; rotation eases
+    // a touch faster than translation so aiming stays responsive while movement
+    // and re-framing glide. Snap on the first frame to avoid a startup swoop.
+    const float dt = GetFrameTime();
+    if (!state.camSmoothInit) {
+        state.camPosR = state.camPos;
+        state.camYawR = state.camYaw;
+        state.camPitchR = state.camPitch;
+        state.camSmoothInit = true;
+    } else {
+        const float aPos = 1.0f - expf(-12.0f * dt);
+        const float aRot = 1.0f - expf(-18.0f * dt);
+        state.camPosR    = Vector3Lerp(state.camPosR, state.camPos, aPos);
+        state.camYawR   += (state.camYaw   - state.camYawR)   * aRot;
+        state.camPitchR += (state.camPitch - state.camPitchR) * aRot;
+    }
+
+    const Vector3 rForward = ForwardDir(state.camYawR, state.camPitchR);
+    state.camera.position = state.camPosR;
+    state.camera.target   = Vector3Add(state.camPosR, rForward);
+    state.camera.up       = Vector3{0, 1, 0};
 }
 
 // ─── Drawing ─────────────────────────────────────────────────────────────────
 
 void App::DrawScene()
 {
-    DrawCircleV(state.pos, state.radius, state.shapeColor);
+    if (!state.hasEvent) return;
 
-    const char* msg = "raylib + Dear ImGui template";
-    int fontSize = 20;
-    int tw = MeasureText(msg, fontSize);
-    DrawText(msg, (SW() - tw) / 2, SH() - 40, fontSize, Fade(WHITE, 0.6f));
+    BeginMode3D(state.camera);
+
+    scene.Draw();
+
+    if (state.showBoundingBox) {
+        const BoundingBox bb = scene.Bounds();
+        const Vector3 center = {
+            (bb.min.x + bb.max.x) * 0.5f,
+            (bb.min.y + bb.max.y) * 0.5f,
+            (bb.min.z + bb.max.z) * 0.5f,
+        };
+        const Vector3 boxSize = {
+            bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z,
+        };
+        DrawCubeWiresV(center, boxSize, Fade(GRAY, 0.35f));
+    }
+
+    EndMode3D();
 }
 
 void App::DrawGui()
@@ -159,31 +404,66 @@ void App::DrawGui()
 
     ImGui::Separator();
 
-    ImGui::Checkbox("Paused (space)", &state.paused);
-    ImGui::SliderFloat("Speed", &state.speed, 0.0f, 600.0f, "%.0f px/s");
-    ImGui::SliderFloat("Radius", &state.radius, 5.0f, 200.0f, "%.0f px");
-
-    float shape[4] = { state.shapeColor.r / 255.0f, state.shapeColor.g / 255.0f,
-                       state.shapeColor.b / 255.0f, state.shapeColor.a / 255.0f };
-    if (ImGui::ColorEdit4("Shape", shape)) {
-        state.shapeColor = { (unsigned char)(shape[0] * 255), (unsigned char)(shape[1] * 255),
-                             (unsigned char)(shape[2] * 255), (unsigned char)(shape[3] * 255) };
+    // ─── Event picker ──────────────────────────────────────────────────────────
+    ImGui::TextUnformatted("Event file");
+    const char* preview = (state.selectedEvent >= 0)
+        ? state.eventFiles[state.selectedEvent].c_str()
+        : "(select an event)";
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::BeginCombo("##eventfile", preview)) {
+        for (int i = 0; i < (int)state.eventFiles.size(); ++i) {
+            bool selected = (i == state.selectedEvent);
+            if (ImGui::Selectable(state.eventFiles[i].c_str(), selected))
+                LoadEvent(i);
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh"))
+        RefreshEventList();
 
-    float bg[3] = { state.clearColor.r / 255.0f, state.clearColor.g / 255.0f, state.clearColor.b / 255.0f };
-    if (ImGui::ColorEdit3("Background", bg)) {
-        state.clearColor = { (unsigned char)(bg[0] * 255), (unsigned char)(bg[1] * 255),
-                             (unsigned char)(bg[2] * 255), 255 };
+    if (state.eventFiles.empty())
+        ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "No .json files in %s", kEventsDir);
+
+    // ─── Loaded event info + view controls ───────────────────────────────────────
+    if (state.hasEvent) {
+        ImGui::Separator();
+        ImGui::Text("\"%s\"", state.event.description.c_str());
+        ImGui::Text("%zu hits, %zu MC particles",
+                    state.event.x.size(), state.event.montecarlo.particles.size());
+
+        ImGui::Separator();
+        ImGui::Checkbox("Bounding box", &state.showBoundingBox);
+        float bg[3] = {state.background.r / 255.0f, state.background.g / 255.0f, state.background.b / 255.0f};
+        if (ImGui::ColorEdit3("Background", bg))
+            state.background = {(unsigned char)(bg[0] * 255), (unsigned char)(bg[1] * 255),
+                                (unsigned char)(bg[2] * 255), 255};
+        if (ImGui::Button("Reset view"))
+            FrameEvent();
+        ImGui::SameLine();
+        if (ImGui::Button("Screenshot"))
+            RequestScreenshot();
+        ImGui::SliderFloat("Move speed", &state.moveSpeed, 0.05f, 3.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("FOV", &state.camera.fovy, 10.0f, 120.0f, "%.0f deg");
+        ImGui::TextDisabled("LMB look  RMB/MMB pan  wheel dolly");
+        ImGui::TextDisabled("WASD/QE fly  -  hold Shift = slow");
     }
 
     ImGui::Separator();
-    ImGui::Checkbox("Show ImGui demo window", &state.showImGuiDemo);
-    ImGui::TextDisabled("Ctrl+Q to quit");
+    ImGui::TextDisabled("F12 screenshot  -  Ctrl+Q to quit");
 
     ImGui::End();
 
-    if (state.showImGuiDemo)
-        ImGui::ShowDemoWindow(&state.showImGuiDemo);
+    // ─── Layers window: fully customizable per-layer appearance ──────────────────
+    if (state.hasEvent) {
+        ImGui::SetNextWindowPos({10.0f, 320.0f}, ImGuiCond_Once);
+        ImGui::Begin("Layers", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+        scene.DrawInspectorUI();
+        ImGui::End();
+    }
 }
 
 // ─── Frame ───────────────────────────────────────────────────────────────────
@@ -194,9 +474,10 @@ void App::Frame()
     Update();
 
     BeginDrawing();
-    ClearBackground(state.clearColor);
+    ClearBackground(state.background);
 
     DrawScene();
+    CaptureScreenshot();
 
     rlImGuiBegin();
 #ifdef __EMSCRIPTEN__

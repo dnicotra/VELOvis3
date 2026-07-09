@@ -9,7 +9,7 @@ try {
     cmake -B build-desktop -S . -DCMAKE_BUILD_TYPE=Release
     cmake --build build-desktop --config Release --parallel
     if ($Run) {
-        $exe = Get-ChildItem -Path build-desktop -Recurse -Filter "dear_raylib.exe" | Select-Object -First 1
+        $exe = Get-ChildItem -Path build-desktop -Recurse -Filter "VELOvis3.exe" | Select-Object -First 1
         if ($exe) { & $exe.FullName } else { Write-Error "Executable not found" }
     }
 } finally {

@@ -17,7 +17,7 @@ concurrency:
 # The web output is APP_NAME.html/.js/.wasm. Keep APP_NAME in sync with the
 # `set(APP_NAME ...)` line in CMakeLists.txt.
 env:
-  APP_NAME: dear_raylib
+  APP_NAME: VELOvis3
 
 jobs:
   build:

@@ -1,4 +1,4 @@
-# dear_raylib
+# VELOvis3
 
 A starter **template** for cross-platform graphics apps built with
 [raylib](https://www.raylib.com/), [Dear ImGui](https://github.com/ocornut/imgui),
@@ -65,8 +65,8 @@ cmake --build build-desktop --config Release --parallel
 Run it:
 
 ```sh
-./build-desktop/dear_raylib              # Linux / macOS
-.\build-desktop\Release\dear_raylib.exe  # Windows (MSVC)
+./build-desktop/VELOvis3              # Linux / macOS
+.\build-desktop\Release\VELOvis3.exe  # Windows (MSVC)
 ```
 
 Or use the helper: `./scripts/build-desktop.ps1 -Run`.
@@ -101,13 +101,13 @@ Helpers: `./scripts/build-web.sh --serve` or `.\scripts\build-web.ps1 -Serve`.
 cd build-web && python3 -m http.server 8080
 ```
 
-Open <http://localhost:8080/dear_raylib.html>.
+Open <http://localhost:8080/VELOvis3.html>.
 
 ---
 
 ## Make it your own
 
-1. **Rename the app**: change `set(APP_NAME dear_raylib)` at the top of
+1. **Rename the app**: change `set(APP_NAME VELOvis3)` at the top of
    `CMakeLists.txt`, the `env: APP_NAME` in `.github/workflows/deploy.yml`, the
    `InitWindow(...)` title in `src/App.cpp`, and `<title>` in `src/shell.html`.
 2. **Write your app**: replace the bouncing-circle demo in `src/App.cpp` /

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── Project ───────────────────────────────────────────────────────────────────
 # Rename APP_NAME to start your own project. It is used as the executable name,
 # the window title, and the web output filename (APP_NAME.html / .js / .wasm).
-set(APP_NAME dear_raylib)
+set(APP_NAME VELOvis3)
 project(${APP_NAME} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -84,16 +84,29 @@ target_include_directories(rlimgui_lib PUBLIC
 )
 target_link_libraries(rlimgui_lib PUBLIC raylib imgui_lib)
 
+# ─── nlohmann/json (header-only) ───────────────────────────────────────────────
+CPMAddPackage(
+    NAME nlohmann_json
+    GITHUB_REPOSITORY nlohmann/json
+    GIT_TAG v3.11.3
+    OPTIONS
+        "JSON_BuildTests OFF"
+)
+
 # ─── Main executable ───────────────────────────────────────────────────────────
 add_executable(${APP_NAME}
     src/main.cpp
     src/App.cpp
+    src/EventReader.cpp
+    src/GpuBatch.cpp
+    src/EventScene.cpp
 )
 target_include_directories(${APP_NAME} PRIVATE src)
 target_link_libraries(${APP_NAME} PRIVATE
     raylib
     imgui_lib
     rlimgui_lib
+    nlohmann_json::nlohmann_json
 )
 
 # ─── Emscripten / Web build ────────────────────────────────────────────────────
@@ -101,7 +114,14 @@ if(EMSCRIPTEN)
     # Emit APP_NAME.html (+ .js + .wasm) instead of a bare binary.
     set(CMAKE_EXECUTABLE_SUFFIX ".html")
 
+    # Wasm-native exception handling: without this, emscripten's default
+    # (JS-based, catching disabled) means any C++ throw — e.g. from
+    # EventReader on a missing/malformed file — aborts the whole runtime
+    # instead of being catchable.
+    target_compile_options(${APP_NAME} PRIVATE -fwasm-exceptions)
+
     target_link_options(${APP_NAME} PRIVATE
+        -fwasm-exceptions
         # Custom HTML shell: console pane, fullscreen, HiDPI-correct canvas sizing.
         "SHELL:--shell-file ${CMAKE_SOURCE_DIR}/src/shell.html"
         # Emscripten's bundled GLFW 3 — required by raylib on the web.

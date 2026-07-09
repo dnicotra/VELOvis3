@@ -15,6 +15,6 @@ emcmake cmake -B build-web -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build-web --parallel "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
 if [[ "${1:-}" == "--serve" ]]; then
-    echo "Serving on http://localhost:8080/dear_raylib.html"
+    echo "Serving on http://localhost:8080/VELOvis3.html"
     (cd build-web && python3 -m http.server 8080)
 fi
