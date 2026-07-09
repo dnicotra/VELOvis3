@@ -388,8 +388,18 @@ void App::DrawScene()
 
 void App::DrawGui()
 {
-    ImGui::SetNextWindowPos({10.0f, 10.0f}, ImGuiCond_Once);
-    ImGui::Begin("Controls", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    // ─── Single control panel, pinned to the left edge and spanning full height ───
+    // One window with collapsible sections replaces the old free-floating
+    // "Controls" + "Layers" windows, which started stacked and overlapped once the
+    // top window grew — making it hard to tell there were two of them.
+    const float panelW = 320.0f * dpiScale;
+    ImGui::SetNextWindowPos({0.0f, 0.0f}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({panelW, (float)SH()}, ImGuiCond_Always);
+    ImGui::Begin("VELOvis controls", nullptr,
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    const float itemW = ImGui::GetContentRegionAvail().x;
 
     ImGui::Text("FPS: %d", GetFPS());
     ImGui::SameLine();
@@ -402,39 +412,37 @@ void App::DrawGui()
     ImGui::Text("  %d x %d", SW(), SH());
 #endif
 
-    ImGui::Separator();
-
-    // ─── Event picker ──────────────────────────────────────────────────────────
-    ImGui::TextUnformatted("Event file");
-    const char* preview = (state.selectedEvent >= 0)
-        ? state.eventFiles[state.selectedEvent].c_str()
-        : "(select an event)";
-    ImGui::SetNextItemWidth(220.0f);
-    if (ImGui::BeginCombo("##eventfile", preview)) {
-        for (int i = 0; i < (int)state.eventFiles.size(); ++i) {
-            bool selected = (i == state.selectedEvent);
-            if (ImGui::Selectable(state.eventFiles[i].c_str(), selected))
-                LoadEvent(i);
-            if (selected)
-                ImGui::SetItemDefaultFocus();
+    // ─── Event section ───────────────────────────────────────────────────────────
+    if (ImGui::CollapsingHeader("Event", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const char* preview = (state.selectedEvent >= 0)
+            ? state.eventFiles[state.selectedEvent].c_str()
+            : "(select an event)";
+        ImGui::SetNextItemWidth(itemW);
+        if (ImGui::BeginCombo("##eventfile", preview)) {
+            for (int i = 0; i < (int)state.eventFiles.size(); ++i) {
+                bool selected = (i == state.selectedEvent);
+                if (ImGui::Selectable(state.eventFiles[i].c_str(), selected))
+                    LoadEvent(i);
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
         }
-        ImGui::EndCombo();
+        if (ImGui::Button("Refresh"))
+            RefreshEventList();
+
+        if (state.eventFiles.empty())
+            ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "No .json files in %s", kEventsDir);
+
+        if (state.hasEvent) {
+            ImGui::TextWrapped("\"%s\"", state.event.description.c_str());
+            ImGui::Text("%zu hits, %zu MC particles",
+                        state.event.x.size(), state.event.montecarlo.particles.size());
+        }
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh"))
-        RefreshEventList();
 
-    if (state.eventFiles.empty())
-        ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "No .json files in %s", kEventsDir);
-
-    // ─── Loaded event info + view controls ───────────────────────────────────────
-    if (state.hasEvent) {
-        ImGui::Separator();
-        ImGui::Text("\"%s\"", state.event.description.c_str());
-        ImGui::Text("%zu hits, %zu MC particles",
-                    state.event.x.size(), state.event.montecarlo.particles.size());
-
-        ImGui::Separator();
+    // ─── View section ────────────────────────────────────────────────────────────
+    if (state.hasEvent && ImGui::CollapsingHeader("View", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Bounding box", &state.showBoundingBox);
         float bg[3] = {state.background.r / 255.0f, state.background.g / 255.0f, state.background.b / 255.0f};
         if (ImGui::ColorEdit3("Background", bg))
@@ -452,18 +460,14 @@ void App::DrawGui()
         ImGui::TextDisabled("WASD/QE fly  -  hold Shift = slow");
     }
 
+    // ─── Layers section: fully customizable per-layer appearance ──────────────────
+    if (state.hasEvent)
+        scene.DrawInspectorUI();
+
     ImGui::Separator();
     ImGui::TextDisabled("F12 screenshot  -  Ctrl+Q to quit");
 
     ImGui::End();
-
-    // ─── Layers window: fully customizable per-layer appearance ──────────────────
-    if (state.hasEvent) {
-        ImGui::SetNextWindowPos({10.0f, 320.0f}, ImGuiCond_Once);
-        ImGui::Begin("Layers", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-        scene.DrawInspectorUI();
-        ImGui::End();
-    }
 }
 
 // ─── Frame ───────────────────────────────────────────────────────────────────
