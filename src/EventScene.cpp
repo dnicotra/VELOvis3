@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <unordered_map>
 
 // ─── Color coding ──────────────────────────────────────────────────────────────
@@ -235,7 +236,7 @@ void EventScene::SetEvent(const velo::VeloEvent& ev) {
 
     // MC-truth track layer. Default to coloring by PID to showcase the feature.
     TrackLayer mc;
-    mc.name = "MC truth tracks";
+    mc.name = "Tracks";
     mc.color.mode = TCM_Pid;  // signed PID (charge-shaded) by default
     mc.tracks.reserve(ev.montecarlo.particles.size());
     mc.meta.reserve(ev.montecarlo.particles.size());
@@ -299,7 +300,16 @@ void EventScene::RebuildHits(HitLayer& l) {
             float mn = 1e30f, mx = -1e30f;
             for (const auto& p : positions_) { mn = fminf(mn, p.z); mx = fmaxf(mx, p.z); }
             if (mx <= mn) mx = mn + 1.0f;
-            for (int i = 0; i < n; ++i) colors[i] = Colormap((positions_[i].z - mn) / (mx - mn));
+            l.colorRangeMin = mn; l.colorRangeMax = mx;
+            if (l.rangeModeCache != HCM_DepthZ || l.rangeLo >= l.rangeHi) {
+                l.rangeLo = mn; l.rangeHi = mx; l.rangeModeCache = HCM_DepthZ;
+            }
+            const float span = fmaxf(l.rangeHi - l.rangeLo, 1e-6f);
+            for (int i = 0; i < n; ++i) {
+                float t = (positions_[i].z - l.rangeLo) / span;
+                t = (t < 0.0f) ? 0.0f : (t > 1.0f) ? 1.0f : t;
+                colors[i] = Colormap(t);
+            }
         } break;
         case HCM_Module:
             for (int i = 0; i < n; ++i)
@@ -331,22 +341,30 @@ void EventScene::RebuildTracks(TrackLayer& l) {
     std::vector<Vector3> A, B;
     std::vector<Color>   C;
 
-    // Normalize the selected scalar across the layer for continuous modes.
+    // Normalize the selected scalar across the layer for continuous modes, over
+    // the user-narrowed [rangeLo, rangeHi] sub-range rather than the full data
+    // extent — values outside it clamp to the nearest end colour.
     const bool cont = (l.color.mode >= TCM_Pt && l.color.mode <= TCM_Eta);
-    float mn = 1e30f, mx = -1e30f;
     if (cont && !l.meta.empty()) {
+        float mn = 1e30f, mx = -1e30f;
         for (const auto& m : l.meta) {
             const float s = TrackScalar(l.color.mode, m);
             mn = fminf(mn, s); mx = fmaxf(mx, s);
         }
         if (mx <= mn) mx = mn + 1.0f;
+        l.colorRangeMin = mn; l.colorRangeMax = mx;
+        if (l.rangeModeCache != l.color.mode || l.rangeLo >= l.rangeHi) {
+            l.rangeLo = mn; l.rangeHi = mx; l.rangeModeCache = l.color.mode;
+        }
     }
+    const float span = fmaxf(l.rangeHi - l.rangeLo, 1e-6f);
 
     int segCount = 0;
     for (size_t ti = 0; ti < l.tracks.size(); ++ti) {
         const Track&     t = l.tracks[ti];
         const TrackMeta* m = (ti < l.meta.size()) ? &l.meta[ti] : nullptr;
-        const float norm = (cont && m) ? (TrackScalar(l.color.mode, *m) - mn) / (mx - mn) : 0.0f;
+        float norm = (cont && m) ? (TrackScalar(l.color.mode, *m) - l.rangeLo) / span : 0.0f;
+        norm = (norm < 0.0f) ? 0.0f : (norm > 1.0f) ? 1.0f : norm;
         const Color col  = TrackColor(l.color, m, norm);
 
         for (size_t k = 0; k + 1 < t.hitIndices.size(); ++k) {
@@ -563,6 +581,266 @@ static bool RawColorEdit(const char* label, Color& col) {
     return false;
 }
 
+// Friendly names for common PDG codes (|pid|); unrecognized species just show
+// their numeric code. Not exhaustive by design — the legend falls back cleanly.
+static const char* PidName(int absPid) {
+    switch (absPid) {
+        case 11:   return "e";
+        case 13:   return "mu";
+        case 15:   return "tau";
+        case 22:   return "gamma";
+        case 111:  return "pi0";
+        case 211:  return "pi";
+        case 130:  return "K_L";
+        case 310:  return "K_S";
+        case 321:  return "K";
+        case 2112: return "n";
+        case 2212: return "p";
+        case 3122: return "Lambda";
+        case 3112: return "Sigma-";
+        case 3222: return "Sigma+";
+        case 411:  return "D";
+        case 421:  return "D0";
+        case 431:  return "D_s";
+        case 511:  return "B0";
+        case 521:  return "B";
+        case 531:  return "B_s";
+        case 443:  return "J/psi";
+        default:   return nullptr;
+    }
+}
+
+// Distinct |PID| species referenced by [begin, end), in ascending order.
+// pidOf extracts the (possibly signed) PID from each element; zero (= no
+// owning particle / unset) is skipped.
+template <typename It, typename PidOf>
+static std::vector<int> UniqueAbsPids(It begin, It end, PidOf pidOf) {
+    std::vector<int> out;
+    for (It it = begin; it != end; ++it) {
+        const int pid = pidOf(*it);
+        if (pid == 0) continue;
+        const int a = (pid < 0) ? -pid : pid;
+        if (std::find(out.begin(), out.end(), a) == out.end())
+            out.push_back(a);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+static const ImGuiColorEditFlags kSwatchFlags = ImGuiColorEditFlags_NoTooltip |
+                                                 ImGuiColorEditFlags_NoPicker |
+                                                 ImGuiColorEditFlags_NoAlpha;
+
+static void ColorSwatch(const char* id, Color col) {
+    ImGui::ColorButton(id, ImVec4(col.r / 255.0f, col.g / 255.0f, col.b / 255.0f, 1.0f),
+                        kSwatchFlags, ImVec2(14, 14));
+}
+
+// Colour-swatch legend rows for one PID-coloured source: one row per species,
+// labelled with a friendly name where known. Signed PID modes shade the base
+// hue by charge, so those get two explicit swatches per row (left = positive,
+// right = negative) instead of a single neutral one plus a text explanation.
+static void DrawPidLegendRows(const std::vector<int>& absPids, bool signedShading) {
+    for (int pid : absPids) {
+        ImGui::PushID(pid);
+        if (signedShading) {
+            ColorSwatch("##pos", PidColor(pid, 1));
+            ImGui::SameLine(0.0f, 2.0f);
+            ColorSwatch("##neg", PidColor(pid, -1));
+        } else {
+            ColorSwatch("##swatch", Palette(pid));
+        }
+        ImGui::SameLine();
+        if (const char* name = PidName(pid))
+            ImGui::Text("%s (%d)", name, pid);
+        else
+            ImGui::Text("%d", pid);
+        ImGui::PopID();
+    }
+}
+
+// Colour-swatch legend for the charge-sign colouring: one row per sign,
+// covering the three ChargeColor() outcomes.
+static void DrawChargeLegendRows() {
+    static const struct { int sign; const char* label; } kRows[] = {
+        {1, "positive"}, {-1, "negative"}, {0, "neutral"},
+    };
+    for (const auto& row : kRows) {
+        ImGui::PushID(row.sign);
+        ColorSwatch("##swatch", ChargeColor(row.sign));
+        ImGui::SameLine();
+        ImGui::Text("%s", row.label);
+        ImGui::PopID();
+    }
+}
+
+// Wide interactive colour-scale bar for a continuous mode (Depth z / pT / p /
+// eta): a smooth gradient swept through Colormap() over the full data range
+// [dataMin, dataMax], with two draggable triangle handles marking the
+// [lo, hi] sub-range the colour scale is actually stretched over — dragging a
+// handle narrows the range, clamping values beyond it to the end colour.
+// Returns true the frame either handle moved (caller must then re-bake).
+static bool DrawColormapRangeBar(const char* propName, float dataMin, float dataMax, float& lo, float& hi) {
+    bool changed = false;
+    ImGui::Text("%s", propName);
+
+    const float barW = 340.0f, barH = 28.0f;     // the gradient itself
+    const float hitW = 22.0f, hitH = 22.0f;       // draggable hit-box, bigger than the drawn triangle
+    const float triW = 16.0f, triH = 16.0f;       // drawn triangle, centred in the hit-box
+    ImDrawList*   dl = ImGui::GetWindowDrawList();
+    const ImVec2  p0 = ImGui::GetCursorScreenPos();
+
+    const int steps = 64;
+    for (int i = 0; i < steps; ++i) {
+        const Color c = Colormap((float)i / steps);
+        const float x0 = p0.x + barW * i / steps;
+        const float x1 = p0.x + barW * (i + 1) / steps;
+        dl->AddRectFilled(ImVec2(x0, p0.y), ImVec2(x1, p0.y + barH), IM_COL32(c.r, c.g, c.b, 255));
+    }
+    dl->AddRect(p0, ImVec2(p0.x + barW, p0.y + barH), IM_COL32(255, 255, 255, 80));
+    ImGui::Dummy(ImVec2(barW, barH));
+
+    const float range   = fmaxf(dataMax - dataMin, 1e-6f);
+    const float epsilon = fmaxf(range * 0.002f, 1e-5f);
+    auto valueToX = [&](float v) { return p0.x + barW * (v - dataMin) / range; };
+
+    const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+
+    // The hit-box is clamped to stay fully within [p0.x, p0.x + barW] so it
+    // never spills past the bar's edges — letting it do so at the extremes
+    // (lo == dataMin or hi == dataMax) would push the window's auto-fit
+    // bounds outward and make the whole legend visibly resize while dragging.
+    auto drawHandle = [&](const char* id, float& value, float minBound, float maxBound) {
+        float bx = valueToX(value) - hitW * 0.5f;
+        bx = (bx < p0.x) ? p0.x : (bx > p0.x + barW - hitW) ? p0.x + barW - hitW : bx;
+        ImGui::SetCursorScreenPos(ImVec2(bx, rowPos.y));
+        ImGui::InvisibleButton(id, ImVec2(hitW, hitH));
+        const bool active  = ImGui::IsItemActive();
+        const bool hovered = ImGui::IsItemHovered();
+        if (active && ImGui::GetIO().MouseDelta.x != 0.0f) {
+            float nv = value + ImGui::GetIO().MouseDelta.x / barW * range;
+            nv = (nv < minBound) ? minBound : (nv > maxBound) ? maxBound : nv;
+            if (nv != value) { value = nv; changed = true; }
+        }
+        const ImU32 col = active ? IM_COL32(255, 255, 255, 255)
+                         : hovered ? IM_COL32(225, 225, 225, 255)
+                                   : IM_COL32(190, 190, 190, 255);
+        const float cx = bx + hitW * 0.5f;  // triangle follows the clamped, on-screen centre
+        dl->AddTriangleFilled(ImVec2(cx - triW * 0.5f, rowPos.y), ImVec2(cx + triW * 0.5f, rowPos.y),
+                              ImVec2(cx, rowPos.y + triH), col);
+    };
+
+    drawHandle("##lo", lo, dataMin, hi - epsilon);
+    drawHandle("##hi", hi, lo + epsilon, dataMax);
+    ImGui::Dummy(ImVec2(barW, hitH));
+
+    // lo left-aligned at x=0, hi right-aligned to end exactly at x=barW (using
+    // its own measured width, not a guessed one) so the row's content width
+    // never exceeds the bar regardless of how many digits either value has.
+    char hiText[32];
+    std::snprintf(hiText, sizeof(hiText), "%.2f", hi);
+    ImGui::Text("%.2f", lo);
+    ImGui::SameLine(barW - ImGui::CalcTextSize(hiText).x);
+    ImGui::Text("%s", hiText);
+
+    return changed;
+}
+
+// Small floating window docked to the top-right, shown only while at least one
+// visible layer is actually colored by PID / |PID| / charge — kept out of the
+// main control panel so it doesn't take up space the rest of the time.
+void EventScene::DrawPidLegendWindow() {
+    enum class Kind { Pid, Charge };
+    struct Source { std::string label; Kind kind; std::vector<int> absPids; bool signedShading; };
+    std::vector<Source> sources;
+
+    if (hitLayer_.visible) {
+        if (hitLayer_.color.mode == HCM_TrackPid || hitLayer_.color.mode == HCM_TrackAbsPid) {
+            auto pids = UniqueAbsPids(ownerPid_.begin(), ownerPid_.end(), [](int p) { return p; });
+            if (!pids.empty())
+                sources.push_back({"Hits", Kind::Pid, std::move(pids), hitLayer_.color.mode == HCM_TrackPid});
+        } else if (hitLayer_.color.mode == HCM_TrackCharge) {
+            sources.push_back({"Hits", Kind::Charge, {}, false});
+        }
+    }
+    for (const auto& l : trackLayers_) {
+        if (!l.visible) continue;
+        if (l.color.mode == TCM_Pid || l.color.mode == TCM_AbsPid) {
+            auto pids = UniqueAbsPids(l.meta.begin(), l.meta.end(), [](const TrackMeta& m) { return m.pid; });
+            if (!pids.empty())
+                sources.push_back({l.name, Kind::Pid, std::move(pids), l.color.mode == TCM_Pid});
+        } else if (l.color.mode == TCM_Charge) {
+            sources.push_back({l.name, Kind::Charge, {}, false});
+        }
+    }
+    if (!sources.empty()) {
+        const ImGuiIO& io = ImGui::GetIO();
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10.0f, 10.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::SetNextWindowBgAlpha(0.85f);
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize |
+                                       ImGuiWindowFlags_NoFocusOnAppearing;
+        if (ImGui::Begin("Legend", nullptr, flags)) {
+            for (size_t i = 0; i < sources.size(); ++i) {
+                if (i > 0) ImGui::Spacing();
+                if (sources.size() > 1) ImGui::TextDisabled("%s", sources[i].label.c_str());
+                if (sources[i].kind == Kind::Pid)
+                    DrawPidLegendRows(sources[i].absPids, sources[i].signedShading);
+                else
+                    DrawChargeLegendRows();
+            }
+        }
+        ImGui::End();
+    }
+
+    DrawColorbarWindow();
+}
+
+// Small floating window docked to the bottom-right, shown only while at least
+// one visible layer is colored by a continuous property (Depth z / pT / p /
+// eta). Kept separate from the PID/charge legend so its gradient bar has room
+// to be readable instead of being squeezed into a narrow shared panel.
+void EventScene::DrawColorbarWindow() {
+    const bool hitsActive = hitLayer_.visible && hitLayer_.color.mode == HCM_DepthZ;
+    int activeCount = hitsActive ? 1 : 0;
+    for (const auto& l : trackLayers_)
+        if (l.visible && (l.color.mode == TCM_Pt || l.color.mode == TCM_P || l.color.mode == TCM_Eta))
+            ++activeCount;
+    if (activeCount == 0) return;
+
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10.0f, io.DisplaySize.y - 10.0f),
+                            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.9f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize |
+                                   ImGuiWindowFlags_NoFocusOnAppearing;
+    if (ImGui::Begin("Colorbar", nullptr, flags)) {
+        bool first = true;
+        if (hitsActive) {
+            first = false;
+            if (activeCount > 1) ImGui::TextDisabled("Hits");
+            ImGui::PushID("hits_colorbar");
+            if (DrawColormapRangeBar("Depth (z)", hitLayer_.colorRangeMin, hitLayer_.colorRangeMax,
+                                     hitLayer_.rangeLo, hitLayer_.rangeHi))
+                hitLayer_.dirty = true;
+            ImGui::PopID();
+        }
+        for (auto& l : trackLayers_) {
+            if (!l.visible || (l.color.mode != TCM_Pt && l.color.mode != TCM_P && l.color.mode != TCM_Eta)) continue;
+            if (!first) ImGui::Spacing();
+            first = false;
+            if (activeCount > 1) ImGui::TextDisabled("%s", l.name.c_str());
+            const char* propName = (l.color.mode == TCM_Pt) ? "pT" : (l.color.mode == TCM_P) ? "p" : "eta";
+            ImGui::PushID(l.name.c_str());
+            if (DrawColormapRangeBar(propName, l.colorRangeMin, l.colorRangeMax, l.rangeLo, l.rangeHi))
+                l.dirty = true;
+            ImGui::PopID();
+        }
+    }
+    ImGui::End();
+}
+
 void EventScene::DrawInspectorUI() {
     // ── Hits ──
     if (ImGui::CollapsingHeader("Hits", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -609,9 +887,9 @@ void EventScene::DrawInspectorUI() {
             if (RawColorEdit("A-side", l.colorA)) l.dirty = true;
             if (RawColorEdit("C-side", l.colorC)) l.dirty = true;
             ImGui::SliderFloat("Alpha", &l.alpha, 0.0f, 1.0f, "%.2f");  // live, no rebuild
-            if (ImGui::SliderFloat("Thickness", &l.thickness, 0.5f, 12.0f, "%.1f mm"))
+            if (ImGui::SliderFloat("Thickness", &l.thickness, 0.5f, 5.0f, "%.1f mm"))
                 l.dirty = true;
-            if (ImGui::SliderFloat("Edge width", &l.edgeWidth, 0.0f, 3.0f, "%.2f mm",
+            if (ImGui::SliderFloat("Edge width", &l.edgeWidth, 0.0f, 1.0f, "%.2f mm",
                                    ImGuiSliderFlags_Logarithmic))
                 l.dirty = true;
         }

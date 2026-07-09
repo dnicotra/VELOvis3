@@ -29,6 +29,7 @@ struct AppState {
     float moveSpeed = 0.6f;                 // WASD/QE fly speed, as a fraction of view scale / s
     bool  showBoundingBox = true;
     Color background      = {12, 12, 16, 255};
+    int   screenshotFormat = 0;             // index into kScreenshotFormats (App.cpp)
 };
 
 class App {

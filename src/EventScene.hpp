@@ -41,6 +41,14 @@ struct TrackLayer {
     GpuBatch  batch;
     bool      dirty        = true;
     int       segmentCount = 0;
+    // Full data range of the active continuous colour mode (pT/p/eta), set by
+    // the last rebuild; the colorbar's fixed endpoints. Meaningless otherwise.
+    float     colorRangeMin = 0.0f, colorRangeMax = 1.0f;
+    // User-narrowed [lo, hi] sub-range the colour scale is actually stretched
+    // over (values outside clamp to the end colour); dragged via the colorbar
+    // handles. Reset to the full data range whenever the mode changes.
+    float     rangeLo = 0.0f, rangeHi = 0.0f;
+    int       rangeModeCache = -1;
 };
 
 // A drawable point cloud (the event's hits).
@@ -52,6 +60,14 @@ struct HitLayer {
     ColorSpec color   = {0, {255, 255, 255, 255}};  // Uniform white by default
     GpuBatch  batch;
     bool      dirty = true;
+    // Full data range of the active continuous colour mode (Depth z), set by
+    // the last rebuild; the colorbar's fixed endpoints. Meaningless otherwise.
+    float     colorRangeMin = 0.0f, colorRangeMax = 1.0f;
+    // User-narrowed [lo, hi] sub-range the colour scale is actually stretched
+    // over (values outside clamp to the end colour); dragged via the colorbar
+    // handles. Reset to the full data range whenever the mode changes.
+    float     rangeLo = 0.0f, rangeHi = 0.0f;
+    int       rangeModeCache = -1;
 };
 
 // The VELO detector overlay: four thin extruded sensor tiles per module, arranged
@@ -95,6 +111,8 @@ public:
     void Update();          // rebuild any dirty layer batches (needs a GL context)
     void Draw(Vector3 camPos); // call inside BeginMode3D; camPos drives depth sorting
     void DrawInspectorUI(); // ImGui controls for every layer
+    void DrawPidLegendWindow(); // floating top-right PID/charge legend; no-op unless one is needed
+    void DrawColorbarWindow();  // floating bottom-right continuous-value colorbar; no-op unless one is needed
 
     BoundingBox Bounds() const { return bounds_; }
     bool        Empty()  const { return positions_.empty(); }

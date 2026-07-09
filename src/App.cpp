@@ -30,10 +30,11 @@ EM_JS(void,   set_canvas_css_size, (int w, int h), {
     Module.canvas.style.width  = w + 'px';
     Module.canvas.style.height = h + 'px';
 });
-EM_JS(void, download_png, (const char* namePtr, const unsigned char* dataPtr, int dataSize), {
+EM_JS(void, download_file, (const char* namePtr, const unsigned char* dataPtr, int dataSize, const char* mimePtr), {
     const name = UTF8ToString(namePtr);
+    const mime = UTF8ToString(mimePtr);
     const bytes = HEAPU8.slice(dataPtr, dataPtr + dataSize);
-    const blob = new Blob([bytes], { type: 'image/png' });
+    const blob = new Blob([bytes], { type: mime });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -45,7 +46,17 @@ EM_JS(void, download_png, (const char* namePtr, const unsigned char* dataPtr, in
 });
 #endif
 
-static std::string ScreenshotName(int serial)
+// Image formats supported by this raylib build's ExportImage() (see config.h:
+// SUPPORT_FILEFORMAT_*). Keep in sync if that configuration changes.
+struct ScreenshotFormat { const char* ext; const char* label; const char* mime; };
+static const ScreenshotFormat kScreenshotFormats[] = {
+    { ".png", "PNG", "image/png" },
+    { ".bmp", "BMP", "image/bmp" },
+    { ".qoi", "QOI", "image/qoi" },
+};
+static constexpr int kScreenshotFormatCount = (int)(sizeof(kScreenshotFormats) / sizeof(kScreenshotFormats[0]));
+
+static std::string ScreenshotName(int serial, const char* ext)
 {
     std::time_t now = std::time(nullptr);
     std::tm tm{};
@@ -56,9 +67,9 @@ static std::string ScreenshotName(int serial)
 #endif
 
     char name[96];
-    std::snprintf(name, sizeof(name), "VELOvis3_%04d%02d%02d_%02d%02d%02d_%03d.png",
+    std::snprintf(name, sizeof(name), "VELOvis3_%04d%02d%02d_%02d%02d%02d_%03d%s",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                  tm.tm_hour, tm.tm_min, tm.tm_sec, serial);
+                  tm.tm_hour, tm.tm_min, tm.tm_sec, serial, ext);
     return name;
 }
 
@@ -257,20 +268,28 @@ void App::CaptureScreenshot()
     if (!screenshotPending) return;
     screenshotPending = false;
 
-    const std::string fileName = ScreenshotName(++screenshotSerial);
+    const ScreenshotFormat& fmt = kScreenshotFormats[state.screenshotFormat];
+    const std::string fileName = ScreenshotName(++screenshotSerial, fmt.ext);
     Image image = LoadImageFromScreen();
 
 #ifdef __EMSCRIPTEN__
-    int pngSize = 0;
-    unsigned char* png = ExportImageToMemory(image, ".png", &pngSize);
-    if (png && pngSize > 0) {
-        download_png(fileName.c_str(), png, pngSize);
-        printf("Screenshot downloaded: %s\n", fileName.c_str());
+    // No in-memory export exists for non-PNG formats in this raylib build, so
+    // write through the (in-memory) virtual filesystem and read the bytes back.
+    if (ExportImage(image, fileName.c_str())) {
+        int dataSize = 0;
+        unsigned char* data = LoadFileData(fileName.c_str(), &dataSize);
+        if (data && dataSize > 0) {
+            download_file(fileName.c_str(), data, dataSize, fmt.mime);
+            printf("Screenshot downloaded: %s\n", fileName.c_str());
+        } else {
+            printf("Screenshot failed\n");
+        }
+        UnloadFileData(data);
+        remove(fileName.c_str());
     } else {
-        printf("Screenshot failed\n");
+        printf("Screenshot failed: %s\n", fileName.c_str());
     }
     fflush(stdout);
-    MemFree(png);
 #else
     if (ExportImage(image, fileName.c_str()))
         printf("Screenshot saved: %s\n", fileName.c_str());
@@ -453,6 +472,18 @@ void App::DrawGui()
         ImGui::SameLine();
         if (ImGui::Button("Screenshot"))
             RequestScreenshot();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(90);
+        if (ImGui::BeginCombo("##screenshotformat", kScreenshotFormats[state.screenshotFormat].label)) {
+            for (int i = 0; i < kScreenshotFormatCount; ++i) {
+                bool selected = (i == state.screenshotFormat);
+                if (ImGui::Selectable(kScreenshotFormats[i].label, selected))
+                    state.screenshotFormat = i;
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
         ImGui::SliderFloat("Move speed", &state.moveSpeed, 0.05f, 3.0f, "%.2f",
                            ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("FOV", &state.camera.fovy, 10.0f, 120.0f, "%.0f deg");
@@ -468,6 +499,9 @@ void App::DrawGui()
     ImGui::TextDisabled("F12 screenshot  -  Ctrl+Q to quit");
 
     ImGui::End();
+
+    if (state.hasEvent)
+        scene.DrawPidLegendWindow();
 }
 
 // ─── Frame ───────────────────────────────────────────────────────────────────
