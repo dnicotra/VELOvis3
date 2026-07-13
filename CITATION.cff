@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use VELOvis3 in scientific work, please cite it using the metadata below."
+
+title: "VELOvis3"
+type: software
+
+authors:
+
+* given-names: "Davide"
+  family-names: "Nicotra"
+
+abstract: >-
+VELOvis3 is a cross-platform application for interactive three-dimensional
+visualisation of particle-detector events in the LHCb Vertex Locator (VELO).
+It supports the visualisation of detector geometry, reconstructed hits and
+tracks, and Monte Carlo truth information, with native desktop and
+WebAssembly builds.
+
+repository-code: "https://github.com/dnicotra/VELOvis3"
+
+keywords:
+
+* "LHCb"
+* "VELO"
+* "particle physics"
+* "event display"
+* "scientific visualisation"
+* "detector visualisation"
+* "track reconstruction"
