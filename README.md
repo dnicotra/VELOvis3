@@ -3,10 +3,9 @@
 **VELOvis3** is an interactive three-dimensional event display for simulated
 $B_s^0 \to \phi\phi$ decays in the LHCb VELO under Run 3 detector conditions.
 
-For LHCb users, it provides a compact view of VELO hits, Monte Carlo particle
-trajectories, and the Run 3 VELO module geometry. For non-experts, it offers an
-accessible way to explore particle collisions in 3D and create high-quality
-scientific visuals.
+The display combines reconstructed VELO hit positions, Monte Carlo particle
+trajectories, and the Run 3 VELO module geometry, allowing each event to be
+explored interactively from any viewpoint.
 
 ## Features
 
