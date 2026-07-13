@@ -1,150 +1,138 @@
 # VELOvis3
 
-A starter **template** for cross-platform graphics apps built with
-[raylib](https://www.raylib.com/), [Dear ImGui](https://github.com/ocornut/imgui),
-and [rlImGui](https://github.com/raylib-extras/rlImGui).
+**VELOvis3** is an interactive three-dimensional event display for the LHCb Vertex Locator (VELO). It is designed to inspect particle-detector events, explore the spatial distribution of hits and tracks, and produce configurable scientific visualizations for presentations and publications.
 
-One codebase builds **native** desktop apps (Windows, Linux, macOS) **and**
-**WebAssembly** for the browser, with a polished HTML shell that gives you a
-console pane, a fullscreen button, and correct HiDPI scaling.
+The display runs as a native desktop application on Windows, Linux, and macOS, or directly in a browser through WebAssembly.
 
-Dependencies are managed by [**CPM.cmake**](https://github.com/cpm-cmake/CPM.cmake) —
-a single, vendored CMake file. There is nothing to install before building: CPM
-fetches and caches raylib, Dear ImGui, and rlImGui on first configure.
+## Scientific visualization features
 
----
+VELOvis3 displays the main components of a VELO event as independently configurable layers:
 
-## What you get
+- **VELO hits**, shown at their reconstructed three-dimensional positions;
+- **particle trajectories**, constructed from the hits associated with Monte Carlo particles;
+- **VELO detector modules**, rendered as a translucent detector overlay.
 
-- **raylib 6.0** application skeleton (`App` class, native/web frame loop).
-- **Dear ImGui 1.92.7** wired up through rlImGui, with a working controls window.
-- **Seamless native + Emscripten** — same `src/`, selected at configure time.
-- **HiDPI-correct web shell** — the canvas framebuffer is sized in physical
-  pixels while ImGui and the CSS layout stay in logical pixels.
-- **Console + fullscreen** in the browser via `src/shell.html`.
-- **GitHub Pages workflow** that builds the web target and deploys it on push.
+Hits can be coloured by:
 
----
+- detector depth along the beam axis;
+- VELO module;
+- particle ID;
+- absolute particle ID;
+- particle charge.
 
-## Why CPM.cmake?
+Tracks can be coloured by:
 
-This stack needs **rlImGui**, which is not published in vcpkg or Conan. CPM.cmake
-fetches it (and everything else) straight from Git, pins exact versions, caches
-sources across projects, and cross-compiles to Emscripten with no extra toolchain
-files — so the native and web builds stay a single `cmake` invocation each.
+- particle ID or absolute particle ID;
+- charge sign;
+- transverse momentum $p_T$;
+- momentum $p$;
+- pseudorapidity $\eta$;
+- long-track status;
+- origin from a beauty-hadron decay.
 
-To reuse downloads across projects and clean builds, point CPM at a shared cache:
+Each layer provides controls for visibility, colour, size or line width, and transparency. Categorical colour schemes are accompanied by an automatic legend, while continuous quantities use an interactive colour bar whose displayed range can be adjusted.
 
-```sh
-export CPM_SOURCE_CACHE=$HOME/.cache/CPM          # macOS / Linux
-```
-```powershell
-setx CPM_SOURCE_CACHE "$env:USERPROFILE\.cache\CPM"   # Windows (once, new shells)
-```
+Additional features include:
 
----
+- interactive three-dimensional camera navigation;
+- automatic framing of each event;
+- configurable background and field of view;
+- preservation of display settings when switching events;
+- screenshot export in PNG, BMP, and QOI formats;
+- high-DPI rendering on desktop and in the browser.
 
-## Prerequisites
+## Event data
 
-| Tool | Version |
-|------|---------|
-| CMake | 3.20+ |
-| A C++17 compiler | MSVC / GCC / Clang |
-| Git | any recent |
-| Emscripten | for web builds only (see below) |
+Events are read from JSON files in `assets/events/`. Each file contains:
 
----
+- hit coordinates `x`, `y`, and `z`;
+- a module prefix sum associating hits with VELO modules;
+- Monte Carlo particle information;
+- the indices of the hits associated with each particle.
 
-## Desktop build
+The Monte Carlo information can include particle ID, charge, momentum, transverse momentum, pseudorapidity, track type, detector acceptance, and decay-origin flags.
+
+When the application starts, it scans `assets/events/` and loads the first available event. Other events can be selected from the control panel.
+
+## Controls
+
+| Input | Action |
+|---|---|
+| Left mouse drag | Change viewing direction |
+| Right or middle mouse drag | Pan the camera |
+| Mouse wheel | Move towards or away from the event |
+| `W`, `A`, `S`, `D` | Move through the scene |
+| `Q`, `E` | Move vertically |
+| Hold `Shift` | Precision movement |
+| `F12` | Save a screenshot |
+| `Ctrl+Q` | Quit the desktop application |
+
+## Build and run
+
+### Requirements
+
+- CMake 3.20 or newer;
+- a C++17 compiler;
+- Git;
+- Emscripten for browser builds.
+
+Dependencies are downloaded automatically during configuration.
+
+### Desktop
 
 ```sh
 cmake -B build-desktop -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build-desktop --config Release --parallel
 ```
 
-Run it:
+Run the application:
 
 ```sh
-./build-desktop/VELOvis3              # Linux / macOS
-.\build-desktop\Release\VELOvis3.exe  # Windows (MSVC)
+./build-desktop/VELOvis3
 ```
 
-Or use the helper: `./scripts/build-desktop.ps1 -Run`.
+On Windows with Visual Studio generators:
 
----
-
-## Web build (Emscripten)
-
-### 1 — Install & activate emsdk (once)
-
-```sh
-git clone https://github.com/emscripten-core/emsdk.git
-cd emsdk && ./emsdk install latest && ./emsdk activate latest
-source ./emsdk_env.sh                     # macOS / Linux, each session
-```
 ```powershell
-.\emsdk_env.ps1                           # Windows, each session
+.\build-desktop\Release\VELOvis3.exe
 ```
 
-### 2 — Configure & build
+### Browser
+
+After installing and activating Emscripten:
 
 ```sh
 emcmake cmake -B build-web -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build-web --parallel
 ```
 
-Helpers: `./scripts/build-web.sh --serve` or `.\scripts\build-web.ps1 -Serve`.
-
-### 3 — Serve (browsers block `file://` for WASM)
+Serve the generated files through a local web server:
 
 ```sh
-cd build-web && python3 -m http.server 8080
+cd build-web
+python3 -m http.server 8080
 ```
 
-Open <http://localhost:8080/VELOvis3.html>.
+Then open `http://localhost:8080/VELOvis3.html`.
 
----
+The GitHub Actions workflow also builds the WebAssembly target and deploys it through GitHub Pages when Pages is enabled for the repository.
 
-## Make it your own
+## Implementation
 
-1. **Rename the app**: change `set(APP_NAME VELOvis3)` at the top of
-   `CMakeLists.txt`, the `env: APP_NAME` in `.github/workflows/deploy.yml`, the
-   `InitWindow(...)` title in `src/App.cpp`, and `<title>` in `src/shell.html`.
-2. **Write your app**: replace the bouncing-circle demo in `src/App.cpp` /
-   `src/App.hpp`. The frame loop, input, web resize, and DPI handling are already
-   done for you.
-3. **Add assets**: drop files in `assets/`. On the web they are preloaded into
-   the virtual filesystem under `assets/` automatically.
-4. **Add dependencies**: add another `CPMAddPackage(...)` block in
-   `CMakeLists.txt`.
+The three-dimensional rendering is implemented with [raylib](https://www.raylib.com/), while the interactive controls use [Dear ImGui](https://github.com/ocornut/imgui) through [rlImGui](https://github.com/raylib-extras/rlImGui).
 
----
+The cross-platform application infrastructure can also be reused as a starter template for native and WebAssembly scientific graphics applications.
 
-## Project structure
+## Citation
 
-```
-.
-├── CMakeLists.txt          # build system; CPM handles all dependencies
-├── cmake/
-│   └── CPM.cmake           # vendored package manager (single file)
-├── src/
-│   ├── main.cpp            # entry point — native while-loop / Emscripten callback
-│   ├── App.hpp             # App + AppState declarations
-│   ├── App.cpp             # frame loop, input, DPI/resize, draw, ImGui
-│   └── shell.html          # Emscripten HTML shell (canvas + console + fullscreen)
-├── assets/                 # bundled into the web build's virtual filesystem
-├── scripts/                # build-desktop / build-web helpers
-└── .github/workflows/
-    └── deploy.yml          # build web target + deploy to GitHub Pages
-```
+If VELOvis3 contributes to scientific work, please cite the software using the metadata in [`CITATION.cff`](CITATION.cff). GitHub provides formatted citation entries through the **Cite this repository** menu.
 
----
+A suitable acknowledgement is:
 
-## Pinned dependency versions
+> Scientific visualizations were produced using VELOvis3, version 1.1 (Davide Nicotra).
 
-| Library | Version |
-|---------|---------|
-| raylib | `6.0` |
-| Dear ImGui | `v1.92.7` |
-| rlImGui | `Raylib_6_0` branch |
-| CPM.cmake | `0.42.3` |
+Visualizations generated with VELOvis3 are not automatically covered by the software licence. Users remain responsible for the copyright and licensing status of their figures and of the underlying event data.
+
+## Licence
+
+VELOvis3 is distributed under the [Apache License 2.0](LICENSE).
