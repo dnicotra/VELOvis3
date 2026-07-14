@@ -3,14 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="theme-color" content="#000000">
   <title>VELOvis3</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: monospace; }
-    body { display: flex; flex-direction: column; }
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden; overscroll-behavior: none;
+      background: #000; font-family: monospace;
+    }
+    /* 100dvh tracks the mobile browser's collapsing toolbars; 100% is the fallback. */
+    body { display: flex; flex-direction: column; height: 100dvh; }
 
-    #canvas-container { flex: 1; overflow: hidden; position: relative; min-height: 0; }
-    canvas { display: block; outline: none; }
+    #canvas-container { flex: 1; overflow: hidden; position: relative; min-height: 0; touch-action: none; }
+    canvas {
+      display: block; outline: none;
+      touch-action: none;                      /* keep drags/pinches out of browser scrolling/zooming */
+      -webkit-tap-highlight-color: transparent;
+      -webkit-user-select: none; user-select: none;
+    }
 
     #console-area {
       flex-shrink: 0; height: 130px;
@@ -34,6 +45,9 @@
       border: none; padding: 4px 6px;
       resize: none; outline: none;
     }
+    /* With the stdout console disabled only the slim toolbar (status + fullscreen) remains. */
+    body.console-off #console-area { height: auto; }
+    body.console-off #output, body.console-off #clear-btn { display: none; }
   </style>
 </head>
 <body>
@@ -50,34 +64,67 @@
   </div>
 
   <script>
+    // Temporarily disabled: flip to true to bring back the on-page stdout
+    // console. While off, stdout/stderr still reach the browser devtools
+    // console and only the slim status toolbar is shown.
+    var SHOW_CONSOLE = false;
+
     var statusEl = document.getElementById('status');
     var outputEl = document.getElementById('output');
     var canvasEl = document.getElementById('canvas');
+    var containerEl = document.getElementById('canvas-container');
+
+    if (!SHOW_CONSOLE) document.body.classList.add('console-off');
 
     document.getElementById('clear-btn').onclick = function () { outputEl.value = ''; };
 
-    // Fullscreen the canvas container so the console pane is hidden while immersed.
-    document.getElementById('fullscreen-btn').onclick = function () {
-      var el = document.getElementById('canvas-container');
-      if (!document.fullscreenElement) {
-        (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+    // Fullscreen the canvas container so the console pane is hidden while
+    // immersed. iOS Safari (iPhone) has no element fullscreen API at all, so
+    // hide the button when it can't work.
+    var fullscreenBtn = document.getElementById('fullscreen-btn');
+    if (!containerEl.requestFullscreen && !containerEl.webkitRequestFullscreen) {
+      fullscreenBtn.style.display = 'none';
+    }
+    fullscreenBtn.onclick = function () {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        (containerEl.requestFullscreen || containerEl.webkitRequestFullscreen).call(containerEl);
       } else {
         (document.exitFullscreen || document.webkitExitFullscreen).call(document);
       }
     };
 
+    // Keep the canvas framebuffer matched to the container in physical pixels
+    // and its CSS size pinned to logical pixels. The app polls the framebuffer
+    // size every frame (App::HandleEvents) and propagates changes to raylib,
+    // so this one observer covers desktop window resizes, mobile orientation
+    // changes, and the fullscreen toggle.
+    function syncCanvasSize() {
+      var dpr = window.devicePixelRatio || 1;
+      var w = containerEl.clientWidth, h = containerEl.clientHeight;
+      if (w <= 0 || h <= 0) return;
+      var bw = Math.round(w * dpr), bh = Math.round(h * dpr);
+      if (canvasEl.width  !== bw) canvasEl.width  = bw;
+      if (canvasEl.height !== bh) canvasEl.height = bh;
+      canvasEl.style.width  = w + 'px';
+      canvasEl.style.height = h + 'px';
+    }
+    if (window.ResizeObserver) new ResizeObserver(syncCanvasSize).observe(containerEl);
+    else window.addEventListener('resize', syncCanvasSize);
+
     var Module = {
       canvas: canvasEl,
       print(...args) {
-        var line = args.join(' ');
-        outputEl.value += line + '\n';
-        outputEl.scrollTop = outputEl.scrollHeight;
+        if (SHOW_CONSOLE) {
+          outputEl.value += args.join(' ') + '\n';
+          outputEl.scrollTop = outputEl.scrollHeight;
+        }
         console.log(...args);
       },
       printErr(...args) {
-        var line = '[err] ' + args.join(' ');
-        outputEl.value += line + '\n';
-        outputEl.scrollTop = outputEl.scrollHeight;
+        if (SHOW_CONSOLE) {
+          outputEl.value += '[err] ' + args.join(' ') + '\n';
+          outputEl.scrollTop = outputEl.scrollHeight;
+        }
         console.error(...args);
       },
       setStatus(text) {

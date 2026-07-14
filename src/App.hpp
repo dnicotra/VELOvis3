@@ -59,6 +59,13 @@ private:
     bool  framedOnce = false;   // camera auto-framed on first load only
     int   lastW = 0, lastH = 0; // last known canvas size; used to detect resize on web
     float dpiScale = 1.0f;      // device pixel ratio; > 1 on HiDPI web builds
+    bool  mobileLayout = false; // phone-sized screen: compact panel, touch hints
     bool  screenshotPending = false;
     int   screenshotSerial = 0;
+
+    // Touch gesture state (web/mobile): one finger looks, two pan + pinch-dolly.
+    int     touchPrevCount = 0; // touch points seen last frame
+    int     touchFrames    = 0; // frames since the current gesture started
+    bool    touchOnUi      = false; // gesture began over the ImGui panel
+    Vector2 touchPrev[2]   = {};    // last positions of the tracked points
 };

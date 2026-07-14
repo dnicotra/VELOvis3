@@ -124,6 +124,10 @@ App::App()
     lastW = SW();
     lastH = SH();
 
+    // Phone-sized screens (any orientation) get a compact layout: the control
+    // panel starts collapsed and shows touch instead of keyboard hints.
+    mobileLayout = fminf((float)SW(), (float)SH()) / dpiScale < 500.0f;
+
     // Default camera; overwritten by FrameEvent() once an event is loaded.
     state.camera.position   = {0.0f, 0.0f, 400.0f};
     state.camera.target     = {0.0f, 0.0f, 0.0f};
@@ -235,15 +239,18 @@ void App::HandleEvents()
         RequestScreenshot();
 
 #ifdef __EMSCRIPTEN__
-    // Detect canvas buffer resizes (e.g. browser window resize). canvas_buf_*
-    // are physical pixels; divide by DPR before SetWindowSize, which (via GLFW)
-    // treats its arguments as CSS pixels.
+    // The shell resizes the canvas framebuffer (physical pixels) whenever the
+    // page layout or orientation changes; mirror any change into raylib.
+    // Without GLFW_SCALE_TO_MONITOR, emscripten's glfwSetWindowSize takes raw
+    // framebuffer pixels and clears the canvas CSS size — re-pin the CSS size
+    // to logical pixels afterwards to keep HiDPI rendering crisp.
     int cw = canvas_buf_width(), ch = canvas_buf_height();
     if (cw != lastW || ch != lastH)
     {
         lastW = cw; lastH = ch;
         double dpr = device_pixel_ratio();
-        SetWindowSize((int)(cw / dpr + 0.5), (int)(ch / dpr + 0.5));
+        SetWindowSize(cw, ch);
+        set_canvas_css_size((int)(cw / dpr + 0.5), (int)(ch / dpr + 0.5));
     }
 #endif
 }
@@ -312,8 +319,61 @@ void App::UpdateFlyCamera()
     Vector3 forward = ForwardDir(state.camYaw, state.camPitch);
     Vector3 right   = Vector3Normalize(Vector3CrossProduct(forward, Vector3{0, 1, 0}));
 
-    // Don't steal the mouse while the pointer is over an ImGui window.
-    if (!io.WantCaptureMouse) {
+    // ─── Touch gestures (web/mobile): 1 finger looks, 2 fingers pan + pinch ────
+    // Deltas are normalized by screen height so the feel is device-independent.
+    // Native desktop never reports touch points, so this block is inert there.
+    const int touches = (GetTouchPointCount() < 2) ? GetTouchPointCount() : 2;
+    if (touches > 0) {
+        const Vector2 t0 = GetTouchPosition(0);
+        const Vector2 t1 = (touches > 1) ? GetTouchPosition(1) : t0;
+
+        // Frame 1 of a gesture only records positions: io.WantCaptureMouse still
+        // reflects the pre-touch pointer position (there is no hover on touch),
+        // so whether the gesture belongs to the UI is decided one frame later.
+        if (touchFrames == 1) touchOnUi = io.WantCaptureMouse;
+
+        // Move only while the finger count is stable; a count change re-baselines.
+        if (touchFrames > 0 && !touchOnUi && touches == touchPrevCount) {
+            if (touches == 1) {
+                // One finger: mouse-look. A screen-height swipe turns ~3 rad.
+                const float lookScale = 3.0f / (float)SH();
+                state.camYaw   -= (t0.x - touchPrev[0].x) * lookScale;
+                state.camPitch -= (t0.y - touchPrev[0].y) * lookScale;
+                const float lim = 1.55f;
+                state.camPitch = fmaxf(-lim, fminf(lim, state.camPitch));
+                forward = ForwardDir(state.camYaw, state.camPitch);
+                right   = Vector3Normalize(Vector3CrossProduct(forward, Vector3{0, 1, 0}));
+            } else {
+                // Two fingers: the midpoint drags the view plane (pan), the
+                // pinch distance dollies along the look direction.
+                const Vector2 mid  = {(t0.x + t1.x) * 0.5f, (t0.y + t1.y) * 0.5f};
+                const Vector2 pmid = {(touchPrev[0].x + touchPrev[1].x) * 0.5f,
+                                      (touchPrev[0].y + touchPrev[1].y) * 0.5f};
+                const Vector3 up = Vector3CrossProduct(right, forward);
+                const float pan = state.viewScale * 1.8f / (float)SH();
+                state.camPos = Vector3Add(state.camPos,
+                    Vector3Add(Vector3Scale(right, -(mid.x - pmid.x) * pan),
+                               Vector3Scale(up,     (mid.y - pmid.y) * pan)));
+
+                const float spread = Vector2Distance(t0, t1) - Vector2Distance(touchPrev[0], touchPrev[1]);
+                state.camPos = Vector3Add(state.camPos,
+                    Vector3Scale(forward, spread * state.viewScale * 2.5f / (float)SH()));
+            }
+        }
+        touchPrev[0]   = t0;
+        touchPrev[1]   = t1;
+        touchPrevCount = touches;
+        ++touchFrames;
+    } else {
+        touchPrevCount = 0;
+        touchFrames    = 0;
+        touchOnUi      = false;
+    }
+
+    // Don't steal the mouse while the pointer is over an ImGui window, and skip
+    // the mouse path during touch: the browser synthesizes mouse events from
+    // touches, which would double-apply the gesture.
+    if (!io.WantCaptureMouse && touches == 0) {
         const Vector2 d = GetMouseDelta();
 
         // Left drag: mouse-look (FPS style) about the eye. No roll — up stays up.
@@ -411,12 +471,24 @@ void App::DrawGui()
     // One window with collapsible sections replaces the old free-floating
     // "Controls" + "Layers" windows, which started stacked and overlapped once the
     // top window grew — making it hard to tell there were two of them.
-    const float panelW = 320.0f * dpiScale;
+    // On phones the fixed-width panel would cover most of the canvas: clamp its
+    // width, let it collapse to just the title bar (the arrow is an easy touch
+    // target), and start collapsed so the event display is the first thing seen.
+    const float panelW = fminf(320.0f * dpiScale, (float)SW() * 0.85f);
     ImGui::SetNextWindowPos({0.0f, 0.0f}, ImGuiCond_Always);
     ImGui::SetNextWindowSize({panelW, (float)SH()}, ImGuiCond_Always);
-    ImGui::Begin("VELOvis controls", nullptr,
-                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    if (mobileLayout)
+        ImGui::SetNextWindowCollapsed(true, ImGuiCond_Once);
+    const bool panelOpen =
+        ImGui::Begin("VELOvis controls", nullptr,
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus);
+    if (!panelOpen) {
+        ImGui::End();
+        if (state.hasEvent)
+            scene.DrawPidLegendWindow();
+        return;
+    }
 
     const float itemW = ImGui::GetContentRegionAvail().x;
 
@@ -487,16 +559,23 @@ void App::DrawGui()
         ImGui::SliderFloat("Move speed", &state.moveSpeed, 0.05f, 3.0f, "%.2f",
                            ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("FOV", &state.camera.fovy, 10.0f, 120.0f, "%.0f deg");
-        ImGui::TextDisabled("LMB look  RMB/MMB pan  wheel dolly");
-        ImGui::TextDisabled("WASD/QE fly  -  hold Shift = slow");
+        if (mobileLayout) {
+            ImGui::TextDisabled("1 finger look  -  2 fingers pan");
+            ImGui::TextDisabled("pinch to dolly");
+        } else {
+            ImGui::TextDisabled("LMB look  RMB/MMB pan  wheel dolly");
+            ImGui::TextDisabled("WASD/QE fly  -  hold Shift = slow");
+        }
     }
 
     // ─── Layers section: fully customizable per-layer appearance ──────────────────
     if (state.hasEvent)
         scene.DrawInspectorUI();
 
-    ImGui::Separator();
-    ImGui::TextDisabled("F12 screenshot  -  Ctrl+Q to quit");
+    if (!mobileLayout) {
+        ImGui::Separator();
+        ImGui::TextDisabled("F12 screenshot  -  Ctrl+Q to quit");
+    }
 
     ImGui::End();
 
